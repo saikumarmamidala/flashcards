@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Full PDF + Image Summarizer using Textract, Lambda, S3
+
+Resources:
+
+  DynamoDBUSerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UserCredentials
+      AttributeDefinitions:
+        - AttributeName: Username
+          AttributeType: S
+      KeySchema:
+        - AttributeName: Username
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  loginLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: login_lambda.lambda_handler
+      Role: arn:aws:iam::964158607568:role/LabRole
+      Code:
+        ZipFile: |
+            import json
+            import boto3
+            from botocore.exceptions import ClientError
+            import hashlib
+
+            dynamodb = boto3.resource('dynamodb')
+            table_name = 'UserCredentials'
+
+            def lambda_handler(event, context):
+              try:
+                body = json.loads(event['body'])
+                username = body['username']
+                password = body['password']
+
+                # Hash the password
+                hashed_password = hashlib.sha256(password.encode()).hexdigest()
+
+                # Access the DynamoDB table
+                table = dynamodb.Table(table_name)
+
+                # Query the table for the username
+                response = table.get_item(Key={'Username': username})
+
+                if 'Item' in response:
+                  stored_password = response['Item']['Password']
+                  if stored_password == hashed_password:
+                    return {
+                      'statusCode': 200,
+                      'body': json.dumps('Login successful!')
+                    }
+                  else:
+                    return {
+                      'statusCode': 401,
+                      'body': json.dumps('Invalid password.')
+                    }
+                else:
+                  return {
+                    'statusCode': 404,
+                    'body': json.dumps('User not found.')
+                  }
+              except ClientError as e:
+                return {
+                  'statusCode': 500,
+                  'body': json.dumps(f"Error accessing DynamoDB: {e.response['Error']['Message']}")
+                }
+              except Exception as e:
+                return {
+                  'statusCode': 500,
+                  'body': json.dumps(f"An error occurred: {str(e)}")
+                }
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        TABLE_NAME: !Ref DynamoDBUSerTable
+
+  signupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: signup_lambda.lambda_handler
+      Role: arn:aws:iam::964158607568:role/LabRole
+      Code:
+        ZipFile: |
+            import json
+            import boto3
+            import hashlib
+
+            dynamodb = boto3.resource('dynamodb')
+            table_name = 'UserCredentials'
+
+            def lambda_handler(event, context):
+              try:
+                body = json.loads(event['body'])
+                username = body['username']
+                password = body['password']
+
+                # Hash the password
+                hashed_password = hashlib.sha256(password.encode()).hexdigest()
+
+                # Access the DynamoDB table
+                table = dynamodb.Table(table_name)
+
+                # Check if the user already exists
+                response = table.get_item(Key={'Username': username})
+
+                if 'Item' in response:
+                  return {
+                    'statusCode': 409,
+                    'body': json.dumps('User already exists.')
+                  }
+                else:
+                  # Store the new user in DynamoDB
+                  table.put_item(Item={'Username': username, 'Password': hashed_password})
+                  return {
+                    'statusCode': 201,
+                    'body': json.dumps('User created successfully!')
+                  }
+              except Exception as e:
+                return {
+                  'statusCode': 500,
+                  'body': json.dumps(f"An error occurred: {str(e)}")
+                }
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        TABLE_NAME: !Ref DynamoDBUSerTable
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: SummarizerAPI
+
+  LoginResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: login
+      RestApiId: !Ref ApiGateway
+
+  SignupResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: signup
+      RestApiId: !Ref ApiGateway
+
+  LoginMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref LoginResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LoginLambdaArn}/invocations
+          - Region: !Ref "AWS::Region"
+            LoginLambdaArn: !GetAtt loginLambda.Arn
+
+  SignupMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SignupResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${SignupLambdaArn}/invocations
+          - Region: !Ref "AWS::Region"
+            SignupLambdaArn: !GetAtt signupLambda.Arn
+
+  PermissionForLoginLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt loginLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  PermissionForSignupLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt signupLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL for Prod stage for login and signup"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/login"
+  SignupUrl:
+    Description: "API Gateway endpoint URL for Prod stage for signup"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/signup"
