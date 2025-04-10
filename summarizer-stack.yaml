@@ -3,6 +3,7 @@ Description: Full PDF + Image Summarizer using Textract, Lambda, S3
 
 Resources:
 
+
   DynamoDBUSerTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -15,16 +16,61 @@ Resources:
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
 
+  DynamoDBcardsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Cards
+      AttributeDefinitions:
+        - AttributeName: CardID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: CardID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  DataBackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: FlashcardVault
+      BackupVaultTags:
+        Project: FlashcardApp
+
+  FlashcardBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: FlashcardBackupPlan
+        BackupPlanRule:
+            - RuleName: DailyBackup
+              TargetBackupVault: !Ref DataBackupVault
+              ScheduleExpression: cron(0 12 * * ? *) # Daily at 12:00 UTC
+              StartWindowMinutes: 60
+              CompletionWindowMinutes: 10080
+              Lifecycle:
+                DeleteAfterDays: 30
+        
+  MyBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref FlashcardBackupPlan
+      BackupSelection:
+        SelectionName: FlashcardSelection
+        IamRoleArn: arn:aws:iam::964158607568:role/LabRole
+        Resources:
+          - !GetAtt DynamoDBcardsTable.Arn
+          - !GetAtt DynamoDBUSerTable.Arn
+
   loginLambda:
     Type: AWS::Lambda::Function
     Properties:
-      Handler: login_lambda.lambda_handler
+      Handler: index.lambda_handler
       Role: arn:aws:iam::964158607568:role/LabRole
       Code:
         ZipFile: |
             import json
             import boto3
-            from botocore.exceptions import ClientError
             import hashlib
 
             dynamodb = boto3.resource('dynamodb')
@@ -32,9 +78,8 @@ Resources:
 
             def lambda_handler(event, context):
               try:
-                body = json.loads(event['body'])
-                username = body['username']
-                password = body['password']
+                username = event['username']
+                password = event['password']
 
                 # Hash the password
                 hashed_password = hashlib.sha256(password.encode()).hexdigest()
@@ -42,12 +87,12 @@ Resources:
                 # Access the DynamoDB table
                 table = dynamodb.Table(table_name)
 
-                # Query the table for the username
+                # Check if the user exists
                 response = table.get_item(Key={'Username': username})
 
                 if 'Item' in response:
-                  stored_password = response['Item']['Password']
-                  if stored_password == hashed_password:
+                  stored_hashed_password = response['Item']['Password']
+                  if stored_hashed_password == hashed_password:
                     return {
                       'statusCode': 200,
                       'body': json.dumps('Login successful!')
@@ -55,33 +100,27 @@ Resources:
                   else:
                     return {
                       'statusCode': 401,
-                      'body': json.dumps('Invalid password.')
+                      'body': json.dumps('Invalid credentials.')
                     }
                 else:
                   return {
                     'statusCode': 404,
                     'body': json.dumps('User not found.')
                   }
-              except ClientError as e:
-                return {
-                  'statusCode': 500,
-                  'body': json.dumps(f"Error accessing DynamoDB: {e.response['Error']['Message']}")
-                }
               except Exception as e:
                 return {
                   'statusCode': 500,
                   'body': json.dumps(f"An error occurred: {str(e)}")
                 }
+        
       Runtime: python3.8
       MemorySize: 128
       Timeout: 30
-      Environment:
-        TABLE_NAME: !Ref DynamoDBUSerTable
 
   signupLambda:
     Type: AWS::Lambda::Function
     Properties:
-      Handler: signup_lambda.lambda_handler
+      Handler: index.lambda_handler
       Role: arn:aws:iam::964158607568:role/LabRole
       Code:
         ZipFile: |
@@ -94,9 +133,8 @@ Resources:
 
             def lambda_handler(event, context):
               try:
-                body = json.loads(event['body'])
-                username = body['username']
-                password = body['password']
+                username = event['username']
+                password = event['password']
 
                 # Hash the password
                 hashed_password = hashlib.sha256(password.encode()).hexdigest()
@@ -127,8 +165,6 @@ Resources:
       Runtime: python3.8
       MemorySize: 128
       Timeout: 30
-      Environment:
-        TABLE_NAME: !Ref DynamoDBUSerTable
 
   ApiGateway:
     Type: AWS::ApiGateway::RestApi
@@ -193,7 +229,109 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
 
+  FlashCardsVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16 
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: FlashCardsVPC
+      
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FlashCardsVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
 
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: FlashCardsIGW
+  
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref FlashCardsVPC
+      InternetGatewayId: !Ref InternetGateway
+  
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FlashCardsVPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+  
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.medium
+      ImageId: ami-084568db4383264d4
+      SubnetId: !Ref PublicSubnet
+      IamInstanceProfile: LabInstanceProfile
+      Tags:
+        - Key: Name
+          Value: FlashCardsInstance
+      SecurityGroupIds:
+        - !GetAtt InstanceSecurityGroup.GroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt-get update
+          sudo apt install awscli -y
+          cd /home/ubuntu
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+          source ~/.bashrc
+          nvm install 20
+          git clone https://github.com/saikumarmamidala/flashcards.git
+          cd flashcards
+          cd flashcards
+          sudo apt-get install -y npm
+          sudo npm install
+          sudo npm start
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access
+      VpcId: !Ref FlashCardsVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        
 Outputs:
   ApiUrl:
     Description: "API Gateway endpoint URL for Prod stage for login and signup"
@@ -201,3 +339,9 @@ Outputs:
   SignupUrl:
     Description: "API Gateway endpoint URL for Prod stage for signup"
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/signup"
+  InstancePublicIP:
+    Description: "Public IP of the EC2 instance"
+    Value: !Sub "http://${!GetAtt Ec2Instance.PublicIp}:3000"
+  InstanceId:
+    Description: "Instance ID of the EC2 instance"
+    Value: !Ref Ec2Instance 
