@@ -341,7 +341,7 @@ Outputs:
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/signup"
   InstancePublicIP:
     Description: "Public IP of the EC2 instance"
-    Value: !Sub "http://${!GetAtt Ec2Instance.PublicIp}:3000"
+    Value: !Sub "http://${Ec2Instance.PublicIp}:3000"
   InstanceId:
     Description: "Instance ID of the EC2 instance"
     Value: !Ref Ec2Instance 
