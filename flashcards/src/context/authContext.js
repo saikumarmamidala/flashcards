@@ -1,37 +1,32 @@
-import React, { createContext, useContext, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import React, { createContext, useContext, useState } from "react";
+import { Navigate } from "react-router-dom";
 
-// Create the Auth Context
 const AuthContext = createContext();
 
-// Auth Provider Component
 export const AuthProvider = ({ children }) => {
-    const [username, setUsername] = useState(null);
+  const [user, setUser] = useState(() => {
+    const storedUser = localStorage.getItem("user");
+    return storedUser ? JSON.parse(storedUser) : null;
+  });
 
-    const login = (username) => {
-        setUsername(username);
-    };
+  const login = (userData) => {
+    setUser(userData); // Set user data
+    localStorage.setItem("user", JSON.stringify(userData)); // Optional: Save to localStorage
+  };
 
-    const logout = () => {
-        setUsername(null);
-    };
+  const logout = () => {
+    setUser(null);
+    localStorage.removeItem("user"); // Optional: Clear localStorage
+  };
 
-    const isAuthenticated = !!username; // Check if the user is authenticated
-
-    return (
-        <AuthContext.Provider value={{ username, login, logout, isAuthenticated }}>
-            {children}
-        </AuthContext.Provider>
-    );
+  return (
+    <AuthContext.Provider value={{ user, login, logout, setUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
-
-// Custom Hook to use Auth Context
-export const useAuth = () => {
-    return useContext(AuthContext);
+export const PrivateRoute = ({ children }) => {
+  const { user } = useAuth();
+  return user ? children : <Navigate to="/auth" />;
 };
-
-// PrivateRoute Component
-export const PrivateRoute = ({ element }) => {
-    const { isAuthenticated } = useAuth();
-    return isAuthenticated ? element : <Navigate to="/auth" />;
-};
+export const useAuth = () => useContext(AuthContext);

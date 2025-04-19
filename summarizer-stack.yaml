@@ -1,10 +1,20 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: Full PDF + Image Summarizer using Textract, Lambda, S3
 
 Resources:
+  s3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: flashcard-pdf
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
 
-
-  DynamoDBUSerTable:
+  DynamoDBUserTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: UserCredentials
@@ -15,20 +25,6 @@ Resources:
         - AttributeName: Username
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
-
-  DynamoDBcardsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: Cards
-      AttributeDefinitions:
-        - AttributeName: CardID
-          AttributeType: S
-      KeySchema:
-        - AttributeName: CardID
-          KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
-      StreamSpecification:
-        StreamViewType: NEW_AND_OLD_IMAGES
 
   DataBackupVault:
     Type: AWS::Backup::BackupVault
@@ -43,14 +39,14 @@ Resources:
       BackupPlan:
         BackupPlanName: FlashcardBackupPlan
         BackupPlanRule:
-            - RuleName: DailyBackup
-              TargetBackupVault: !Ref DataBackupVault
-              ScheduleExpression: cron(0 12 * * ? *) # Daily at 12:00 UTC
-              StartWindowMinutes: 60
-              CompletionWindowMinutes: 10080
-              Lifecycle:
-                DeleteAfterDays: 30
-        
+          - RuleName: DailyBackup
+            TargetBackupVault: !Ref DataBackupVault
+            ScheduleExpression: cron(0 12 * * ? *) # Daily at 12:00 UTC
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 10080
+            Lifecycle:
+              DeleteAfterDays: 30
+
   MyBackupSelection:
     Type: AWS::Backup::BackupSelection
     Properties:
@@ -59,8 +55,7 @@ Resources:
         SelectionName: FlashcardSelection
         IamRoleArn: arn:aws:iam::964158607568:role/LabRole
         Resources:
-          - !GetAtt DynamoDBcardsTable.Arn
-          - !GetAtt DynamoDBUSerTable.Arn
+          - !GetAtt DynamoDBUserTable.Arn
 
   loginLambda:
     Type: AWS::Lambda::Function
@@ -69,50 +64,75 @@ Resources:
       Role: arn:aws:iam::964158607568:role/LabRole
       Code:
         ZipFile: |
-            import json
-            import boto3
-            import hashlib
+          import json
+          import boto3
+          import hashlib
 
-            dynamodb = boto3.resource('dynamodb')
-            table_name = 'UserCredentials'
+          dynamodb = boto3.resource('dynamodb')
+          table_name = 'UserCredentials'
 
-            def lambda_handler(event, context):
+          def lambda_handler(event, context):
               try:
-                username = event['username']
-                password = event['password']
+                  event = json.loads(event['body'])
+                  username = event['username']
+                  password = event['password']
 
-                # Hash the password
-                hashed_password = hashlib.sha256(password.encode()).hexdigest()
+                  # Hash the password
+                  hashed_password = hashlib.sha256(password.encode()).hexdigest()
 
-                # Access the DynamoDB table
-                table = dynamodb.Table(table_name)
+                  # Access the DynamoDB table
+                  table = dynamodb.Table(table_name)
 
-                # Check if the user exists
-                response = table.get_item(Key={'Username': username})
+                  # Check if the user exists
+                  response = table.get_item(Key={'Username': username})
 
-                if 'Item' in response:
-                  stored_hashed_password = response['Item']['Password']
-                  if stored_hashed_password == hashed_password:
-                    return {
-                      'statusCode': 200,
-                      'body': json.dumps('Login successful!')
-                    }
+                  if 'Item' in response:
+                      stored_hashed_password = response['Item']['Password']
+                      if stored_hashed_password == hashed_password:
+                          return {
+                              'statusCode': 200,
+                              'headers': {
+                                  'Content-Type': 'application/json',
+                                  'Access-Control-Allow-Origin': '*',
+                                  'Access-Control-Allow-Headers': '*',
+                                  'Access-Control-Allow-Methods': 'OPTIONS,POST'
+                              },
+                              'body': json.dumps('Login successful!')
+                          }
+                      else:
+                          return {
+                              'statusCode': 401,
+                              'headers': {
+                                  'Content-Type': 'application/json',
+                                  'Access-Control-Allow-Origin': '*',
+                                  'Access-Control-Allow-Headers': '*',
+                                  'Access-Control-Allow-Methods': 'OPTIONS,POST'
+                              },
+                              'body': json.dumps('Invalid credentials.')
+                          }
                   else:
-                    return {
-                      'statusCode': 401,
-                      'body': json.dumps('Invalid credentials.')
-                    }
-                else:
-                  return {
-                    'statusCode': 404,
-                    'body': json.dumps('User not found.')
-                  }
+                      return {
+                          'statusCode': 404,
+                          'headers': {
+                              'Content-Type': 'application/json',
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': '*',
+                              'Access-Control-Allow-Methods': 'OPTIONS,POST'
+                          },
+                          'body': json.dumps('User not found.')
+                      }
               except Exception as e:
-                return {
-                  'statusCode': 500,
-                  'body': json.dumps(f"An error occurred: {str(e)}")
-                }
-        
+                  return {
+                      'statusCode': 500,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': 'OPTIONS,POST'
+                      },
+                      'body': json.dumps(f"An error occurred: {str(e)}")
+                  }
+
       Runtime: python3.8
       MemorySize: 128
       Timeout: 30
@@ -124,44 +144,321 @@ Resources:
       Role: arn:aws:iam::964158607568:role/LabRole
       Code:
         ZipFile: |
-            import json
-            import boto3
-            import hashlib
+          import json
+          import boto3
+          import hashlib
 
-            dynamodb = boto3.resource('dynamodb')
-            table_name = 'UserCredentials'
+          dynamodb = boto3.resource('dynamodb')
+          sns = boto3.client('sns')
+          table_name = 'UserCredentials'
 
-            def lambda_handler(event, context):
+          def lambda_handler(event, context):
               try:
-                username = event['username']
-                password = event['password']
+                  event = json.loads(event['body'])
+                  username = event['username']  # This is the email
+                  password = event['password']
+                  name = event['name']
 
-                # Hash the password
-                hashed_password = hashlib.sha256(password.encode()).hexdigest()
+                  # Hash the password
+                  hashed_password = hashlib.sha256(password.encode()).hexdigest()
 
-                # Access the DynamoDB table
-                table = dynamodb.Table(table_name)
+                  # Access the DynamoDB table
+                  table = dynamodb.Table(table_name)
 
-                # Check if the user already exists
-                response = table.get_item(Key={'Username': username})
+                  # Check if the user already exists
+                  response = table.get_item(Key={'Username': username})
+                  if 'Item' in response:
+                      return {
+                          'statusCode': 409,
+                          'body': json.dumps('User already exists.'),
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': '*',
+                              'Access-Control-Allow-Methods': '*'
+                          }
+                      }
 
-                if 'Item' in response:
+                  # Create an SNS topic for the user
+                  topic_name = f"user_{username.replace('@', '_at_').replace('.', '_dot_')}_topic"
+                  topic_response = sns.create_topic(Name=topic_name)
+                  topic_arn = topic_response['TopicArn']
+
+                  # Subscribe the user's email to the SNS topic
+                  sns.subscribe(
+                      TopicArn=topic_arn,
+                      Protocol='email',
+                      Endpoint=username  # using username as the email
+                  )
+
+                  # Store the new user in DynamoDB along with SNS topic ARN
+                  table.put_item(Item={
+                      'Username': username,
+                      'Password': hashed_password,
+                      'Name': name,
+                      'SNSTopicARN': topic_arn
+                  })
+
                   return {
-                    'statusCode': 409,
-                    'body': json.dumps('User already exists.')
+                      'statusCode': 201,
+                      'body': json.dumps('User created successfully! Please check your email to confirm SNS subscription.'),
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': '*'
+                      }
                   }
-                else:
-                  # Store the new user in DynamoDB
-                  table.put_item(Item={'Username': username, 'Password': hashed_password})
-                  return {
-                    'statusCode': 201,
-                    'body': json.dumps('User created successfully!')
-                  }
+
               except Exception as e:
-                return {
-                  'statusCode': 500,
-                  'body': json.dumps(f"An error occurred: {str(e)}")
-                }
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"An error occurred: {str(e)}"),
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': '*'
+                      }
+                  }
+
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 30
+
+  flashcardsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::964158607568:role/LabRole
+      Code:
+        ZipFile: |
+          import json
+          import base64
+          import uuid
+          import boto3
+          from datetime import datetime
+          import time 
+          import urllib.parse
+
+          s3 = boto3.client('s3')
+          textract = boto3.client('textract')
+
+          def parse_multipart_form_data(body, content_type):
+              print(f"Content-Type: {content_type}")
+              print(f"Body: {body}")
+              """Parse multipart/form-data body manually"""
+              boundary = content_type.split("boundary=")[-1].encode()
+              parts = body.split(b'--' + boundary)
+              parsed_data = {}
+
+              for part in parts[1:-1]:  # Skip first and last dummy parts
+                  if b'\r\n\r\n' in part:
+                      headers, content = part.split(b'\r\n\r\n', 1)
+                      content = content.rstrip(b'\r\n')
+                      headers = headers.decode().split('\r\n')
+                      
+                      # Extract filename
+                      filename = None
+                      for header in headers:
+                          if 'filename="' in header:
+                              filename = header.split('filename="')[1].split('"')[0]
+                              break
+                      
+                      if filename:
+                          parsed_data['file'] = {
+                              'content': content,
+                              'filename': filename
+                          }
+              return parsed_data
+
+          def extract(s3_uri):
+              if s3_uri.startswith('s3://'):
+                  parsed = urllib.parse.urlparse(s3_uri)
+                  bucket = parsed.netloc
+                  key = parsed.path.lstrip('/')
+
+                  start_response = textract.start_document_text_detection(
+                      DocumentLocation={
+                          'S3Object': {
+                              'Bucket': bucket,
+                              'Name': key
+                          }
+                      }
+                  )
+                  job_id = start_response['JobId']
+                  
+                  max_attempts = 30
+                  retries = 0
+
+                  while retries < max_attempts:
+                      response = textract.get_document_text_detection(JobId=job_id)
+                      if response['JobStatus'] == 'SUCCEEDED':
+                          text_blocks = [
+                              block['Text']
+                              for block in response['Blocks']
+                              if block['BlockType'] == 'LINE'
+                          ]
+                          return ' '.join(text_blocks)
+                          
+                      time.sleep(1)
+                      retries += 1
+                  
+          def lambda_handler(event, context):
+              try:
+                  # 1. Validate request
+                  if 'body' not in event or not event['body']:
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps({'error': 'No file provided'})
+                      }
+
+                  # 2. Decode and parse multipart data
+                  content_type = event.get('headers', {}).get('content-type', '')
+                  body = base64.b64decode(event['body'])
+                  form_data = parse_multipart_form_data(body, content_type)
+                  
+                  if 'file' not in form_data:
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps({'error': 'No file found in request'})
+                      }
+
+                  # 3. Generate unique filename
+                  original_filename = form_data['file']['filename']
+                  timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+                  unique_id = str(uuid.uuid4())[:8]
+                  s3_key = f"uploads/{timestamp}-{unique_id}-{original_filename}"
+
+                  # 4. Upload to S3
+                  bucket_name = 'flashcard-pdf' 
+                  s3.put_object(
+                      Bucket=bucket_name,
+                      Key=s3_key,
+                      Body=form_data['file']['content'],
+                      ContentType='application/pdf'
+                  )
+                  
+                  text = extract(f"s3://{bucket_name}/{s3_key}")
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      },
+                      'body': json.dumps({
+                          's3_uri': f"s3://{bucket_name}/{s3_key}",
+                          'message': text
+                      })
+                  }
+
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'headers': {'Access-Control-Allow-Origin': '*'},
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 60
+
+  SnsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::964158607568:role/LabRole
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from botocore.exceptions import ClientError
+
+          dynamodb = boto3.resource('dynamodb')
+          sns = boto3.client('sns')
+          table_name = 'UserCredentials'
+
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event['body'])
+                  username = body['username']  # This is the email
+                  flashcards = body['flashcards']  # List of flashcards
+
+                  if not isinstance(flashcards, list) or not flashcards:
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps('Invalid flashcards format. Must be a non-empty list.'),
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': '*',
+                              'Access-Control-Allow-Methods': '*'
+                          }
+                      }
+
+                  # Fetch the user's SNS topic ARN from DynamoDB
+                  table = dynamodb.Table(table_name)
+                  response = table.get_item(Key={'Username': username})
+
+                  if 'Item' not in response or 'SNSTopicARN' not in response['Item']:
+                      return {
+                          'statusCode': 404,
+                          'body': json.dumps('User or SNS Topic not found.'),
+                          'headers': {
+                              'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Headers': '*',
+                              'Access-Control-Allow-Methods': '*'
+                          }
+                      }
+
+                  topic_arn = response['Item']['SNSTopicARN']
+
+                  # Format flashcards into a readable message
+                  message = "📚 *Your Flashcards:*\n\n"
+                  for i, card in enumerate(flashcards, 1):
+                      if isinstance(card, dict):
+                          front = card.get('question', 'N/A')
+                          back = card.get('answer', 'N/A')
+                          message += f"{i}. {front} → {back}\n"
+                      else:
+                          message += f"{i}. {card}\n"
+
+                  # Publish the message to SNS
+                  sns.publish(
+                      TopicArn=topic_arn,
+                      Subject="Your Flashcards",
+                      Message=message
+                  )
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Flashcards sent successfully via SNS!'),
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': '*'
+                      }
+                  }
+
+              except ClientError as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"AWS Error: {e.response['Error']['Message']}"),
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': '*'
+                      }
+                  }
+
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"An error occurred: {str(e)}"),
+                      'headers': {
+                          'Access-Control-Allow-Origin': '*',
+                          'Access-Control-Allow-Headers': '*',
+                          'Access-Control-Allow-Methods': '*'
+                      }
+                  }
+
       Runtime: python3.8
       MemorySize: 128
       Timeout: 30
@@ -170,6 +467,8 @@ Resources:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: SummarizerAPI
+      BinaryMediaTypes:
+        - multipart/form-data
 
   LoginResource:
     Type: AWS::ApiGateway::Resource
@@ -183,6 +482,20 @@ Resources:
     Properties:
       ParentId: !GetAtt ApiGateway.RootResourceId
       PathPart: signup
+      RestApiId: !Ref ApiGateway
+
+  FlashCardsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: flashcards
+      RestApiId: !Ref ApiGateway
+
+  SnsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: sns
       RestApiId: !Ref ApiGateway
 
   LoginMethod:
@@ -199,6 +512,40 @@ Resources:
           - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LoginLambdaArn}/invocations
           - Region: !Ref "AWS::Region"
             LoginLambdaArn: !GetAtt loginLambda.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  LoginOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref LoginResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
 
   SignupMethod:
     Type: AWS::ApiGateway::Method
@@ -214,6 +561,114 @@ Resources:
           - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${SignupLambdaArn}/invocations
           - Region: !Ref "AWS::Region"
             SignupLambdaArn: !GetAtt signupLambda.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 409
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  SignupOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SignupResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  FlashCardsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref FlashCardsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${FlashcardsLambdaArn}/invocations
+          - Region: !Ref "AWS::Region"
+            FlashcardsLambdaArn: !GetAtt flashcardsLambda.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  snsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SnsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${SnsLambdaArn}/invocations
+          - Region: !Ref "AWS::Region"
+            SnsLambdaArn: !GetAtt SnsLambda.Arn
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  snsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref SnsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
 
   PermissionForLoginLambda:
     Type: AWS::Lambda::Permission
@@ -229,22 +684,29 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
 
+  PermissionForFlashcardsLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt flashcardsLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
   FlashCardsVPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.0.0.0/16 
+      CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
         - Key: Name
           Value: FlashCardsVPC
-      
+
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref FlashCardsVPC
       CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -256,13 +718,13 @@ Resources:
       Tags:
         - Key: Name
           Value: FlashCardsIGW
-  
+
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref FlashCardsVPC
       InternetGatewayId: !Ref InternetGateway
-  
+
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -270,23 +732,71 @@ Resources:
       Tags:
         - Key: Name
           Value: PublicRouteTable
-  
+
   PublicRoute:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
-      
+
   PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
-  
+
+  MySSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: loginLambda
+      Type: "String"
+      Value:
+        Fn::Sub: "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/login"
+
+  MySSMParameter2:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: signupLambda
+      Type: "String"
+      Value:
+        Fn::Sub: "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/signup"
+
+  MySSMParameter3:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: flashcardsLambda
+      Type: "String"
+      Value:
+        Fn::Sub: "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/flashcards"
+
+  MySSMParameter4:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: snsLambda
+      Type: "String"
+      Value:
+        Fn::Sub: "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/sns"
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+    DependsOn:
+      - LoginMethod
+      - SignupMethod
+      - FlashCardsMethod
+      - snsMethod
+      - LoginOptionsMethod
+      - SignupOptionsMethod
+      - FlashCardsMethod
+      - snsOptionsMethod
 
   Ec2Instance:
-    Type: AWS::EC2::Instance
+    Type: "AWS::EC2::Instance"
+    DependsOn:
+      - ApiGatewayDeployment
     Properties:
       InstanceType: t2.medium
       ImageId: ami-084568db4383264d4
@@ -301,7 +811,10 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           sudo apt-get update
-          sudo apt install awscli -y
+          sudo apt install curl unzip -y
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
           cd /home/ubuntu
           curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
           source ~/.bashrc
@@ -309,6 +822,15 @@ Resources:
           git clone https://github.com/saikumarmamidala/flashcards.git
           cd flashcards
           cd flashcards
+          URL1=$(aws ssm get-parameter --name "loginLambda" --query "Parameter.Value" --output text --region us-east-1)
+          URL2=$(aws ssm get-parameter --name "signupLambda" --query "Parameter.Value" --output text --region us-east-1)
+          URL3=$(aws ssm get-parameter --name "flashcardsLambda" --query "Parameter.Value" --output text --region us-east-1)
+          URL4=$(aws ssm get-parameter --name "snsLambda" --query "Parameter.Value" --output text --region us-east-1)
+          echo "REACT_APP_LOGIN_API="$URL1 > .env
+          echo "REACT_APP_SIGNUP_API="$URL2 >> .env
+          echo "REACT_APP_FLASHCARDS_API="$URL3 >> .env
+          echo "REACT_APP_SNS_API="$URL4 >> .env
+          echo "REACT_APP_OPENAI_API_KEY=###" >> .env
           sudo apt-get install -y npm
           sudo npm install
           sudo npm start
@@ -331,17 +853,20 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-        
+
 Outputs:
-  ApiUrl:
-    Description: "API Gateway endpoint URL for Prod stage for login and signup"
+  LoginUrl:
+    Description: "API Gateway endpoint URL for Prod stage for login"
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/login"
   SignupUrl:
     Description: "API Gateway endpoint URL for Prod stage for signup"
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/signup"
+  FlashCardsUrl:
+    Description: "API Gateway endpoint URL for Prod stage for flashcards"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/flashcards"
   InstancePublicIP:
     Description: "Public IP of the EC2 instance"
     Value: !Sub "http://${Ec2Instance.PublicIp}:3000"
   InstanceId:
     Description: "Instance ID of the EC2 instance"
-    Value: !Ref Ec2Instance 
+    Value: !Ref Ec2Instance
