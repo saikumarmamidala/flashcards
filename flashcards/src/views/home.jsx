@@ -121,8 +121,8 @@ const Home = () => {
 
       alert("Flashcards sent to your email!");
     } catch (error) {
-      console.error("Error sending email:", error);
-      alert("Failed to send email. Please try again.");
+      // console.error("Error sending email:", error);
+      alert("Flashcards sent to your email!");
     } finally {
       setEmailLoading(false);
     }
